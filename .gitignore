@@ -4,6 +4,7 @@ __pycache__
 !.gitignore
 !.README.md
 !data/.gitkeep
+!artifacts/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
