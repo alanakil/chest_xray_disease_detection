@@ -8,31 +8,24 @@
 # print("Path to dataset files:", path2)
 
 # %%
-import pandas as pd
-from sklearn.metrics import f1_score
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torchvision
-from torchvision import transforms
-from torch.utils.data import Dataset, DataLoader
-import os
 from PIL import Image
 from glob import glob
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-import torch
-import torch.nn as nn
-import torchvision.models as models
-from torch.utils.data import Dataset
-from PIL import Image
-import torch
-import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 import time
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.nn.init as init
+from torchvision import transforms
+from torch.utils.data import Dataset, DataLoader
+import torchvision.models as models
 from torchsummary import summary
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+from sklearn.metrics import f1_score
 
 from helpers import (
     plot_avg_update_to_weight_ratio_kde,
@@ -43,11 +36,11 @@ from helpers import (
 
 
 # %%
-my_glob = glob("CheXpert-v1.0-small/train/patient*/study*/*.jpg")
+my_glob = glob("../data/CheXpert-v1.0-small/train/patient*/study*/*.jpg")
 print("Number of Observations: ", len(my_glob))
 
 # %%
-train_df = pd.read_csv("./CheXpert-v1.0-small/train.csv")
+train_df = pd.read_csv("../data/CheXpert-v1.0-small/train.csv")
 print(f"the shape of the training dataset is : {train_df.shape}")
 train_df.head()
 
@@ -55,11 +48,11 @@ train_df = train_df.sample(20000, replace=False)
 print(f"the shape of the training dataset is : {train_df.shape}")
 
 # %%
-valid_df = pd.read_csv("./CheXpert-v1.0-small/valid.csv")
+valid_df = pd.read_csv("../data/CheXpert-v1.0-small/valid.csv")
 print(f"the shape of the validation dataset is : {valid_df.shape}")
 valid_df.head()
 
-my_glob_valid = glob("./CheXpert-v1.0-small/valid/patient*/study*/*.jpg")
+my_glob_valid = glob("../data/CheXpert-v1.0-small/valid/patient*/study*/*.jpg")
 print("Number of Observations: ", len(my_glob_valid))
 print(f"the shape of the validation dataset is : {valid_df.shape}")
 
@@ -117,6 +110,8 @@ def prepare_dataset(dataframe, policy, class_names):
 
         y[i] = labels
 
+    x_path = ["../data/" + x for x in x_path]
+
     return x_path, y
 
 
@@ -146,7 +141,7 @@ class_names = [
 num_classes = len(class_names)
 
 policy = ["ones", "zeroes", "mixed"]
-policy = "zeroes"
+policy = "ones"
 
 x_path, labels = prepare_dataset(train_df, policy, class_names)
 valid_x_path, valid_labels = prepare_dataset(valid_df, policy, class_names)
@@ -239,10 +234,9 @@ class CheXpertDataset(Dataset):
 
 
 # %%
-
 train_dataset = CheXpertDataset(train_df)
 train_dataloader = DataLoader(
-    train_dataset, batch_size=128, shuffle=True, num_workers=20
+    train_dataset, batch_size=64, shuffle=True, num_workers=20
 )
 
 valid_dataset = CheXpertDataset(valid_df)
@@ -252,37 +246,132 @@ valid_dataloader = DataLoader(
 
 
 # %%
+class CustomConvNet(nn.Module):
+    def __init__(self, num_classes=5, image_size=224):
+        super(CustomConvNet, self).__init__()
+
+        # Convolutional layers
+        self.conv1 = nn.Conv2d(
+            in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=1
+        )
+        self.conv2 = nn.Conv2d(
+            in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1
+        )
+        self.conv3 = nn.Conv2d(
+            in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1
+        )
+        # Batch normalization
+        self.bn1 = nn.BatchNorm2d(32)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.bn3 = nn.BatchNorm2d(128)
+        # Pooling
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        # Fully connected layers
+        # Set dummy input to determine fully connected layer size
+        self._set_fc_input_size(image_size)
+
+        self.fc1 = nn.Linear(
+            self.fc_input_size, 128
+        )  # Adjust input size based on input image resolution
+        # self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(128, num_classes)
+        # Dropout for regularization
+        self.dropout = nn.Dropout(p=0.5)
+
+    def _set_fc_input_size(self, image_size):
+        # Pass a dummy input through conv layers to dynamically calculate the size
+        dummy_input = torch.zeros(1, 3, image_size, image_size)
+        x = self.pool(F.relu(self.conv1(dummy_input)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = self.pool(F.relu(self.conv3(x)))
+        self.fc_input_size = x.view(-1).shape[0]  # Flatten and get size for fc1 input
+
+    def forward(self, x):
+        # Apply first conv block
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = F.relu(x)
+        x = self.pool(x)
+
+        # Apply second conv block
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = F.relu(x)
+        x = self.pool(x)
+
+        # Apply third conv block
+        x = self.conv3(x)
+        x = self.bn3(x)
+        x = F.relu(x)
+        x = self.pool(x)
+
+        # Flatten
+        x = x.view(x.size(0), -1)
+
+        # Fully connected layers
+        x = self.fc1(x)
+        x = F.relu(x)
+        x = self.dropout(x)
+
+        # x = self.fc2(x)
+        # x = F.relu(x)
+        # x = self.dropout(x)
+
+        x = self.fc3(x)  # Output layer
+
+        return x
+
+    def _initialize_weights(self, layer):
+        """Applies weight initialization based on the layer type."""
+        if isinstance(layer, nn.Conv2d):
+            init.kaiming_normal_(layer.weight, mode="fan_out", nonlinearity="relu")
+            if layer.bias is not None:
+                init.constant_(layer.bias, 0)
+        elif isinstance(layer, nn.Linear):
+            init.xavier_uniform_(layer.weight)
+            if layer.bias is not None:
+                init.constant_(layer.bias, 0)
+
+
+# Example usage
+model = CustomConvNet(num_classes=num_classes)
+print(model)
+
+# for param in model.parameters():
+#     param.requires_grad = True
+
+# %%
 ### TODO: Evaluate different initializations and different networks.
-model = models.resnet50(weights="IMAGENET1K_V2")
+# model = models.resnet50(weights="IMAGENET1K_V2")
 # model = models.resnet152(weights="IMAGENET1K_V1")  # too big for this gpu
 # model = models.vgg16(weights="IMAGENET1K_V1")
 # model = models.densenet121(weights="DEFAULT")
-# model = models.efficientnet_b0(weights="DEFAULT")
+model = models.efficientnet_b0(weights="DEFAULT")
 # model = models.inception_v3(weights="IMAGENET1K_V1")
 # model = models.mobilenet_v2(weights="IMAGENET1K_V2")
 
 intermediate_size = 256  # Size of the new FC layer, adjust as needed
 # Freeze pretrained layers
 for param in model.parameters():
-    param.requires_grad = False
+    param.requires_grad = True
 
 # For VGG16
 # model.classifier[6] = nn.Linear(model.classifier[6].in_features, num_classes)
 
 # For EfficientNet or MobileNet
-# model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
+model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
 
-in_features = model.fc.in_features
+# in_features = model.fc.in_features
 
 # ResNet
-model.fc = nn.Sequential(
-    nn.Linear(in_features, intermediate_size),
-    nn.ReLU(),  # Add an activation function after the intermediate layer
-    nn.Linear(intermediate_size, num_classes),
-)
+# model.fc = nn.Sequential(
+#     nn.Linear(in_features, intermediate_size),
+#     nn.ReLU(),  # Add an activation function after the intermediate layer
+#     nn.Linear(intermediate_size, num_classes),
+# )
 
 # model.fc = nn.Linear(model.fc.in_features, num_classes)
-model.fc.requires_grad = True
+# model.fc.requires_grad = True
 
 # %%
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -291,11 +380,10 @@ model.to(device)
 
 # %%
 summary(model, input_size=(3, 224, 224))
-# model
 # %%
 criterion = nn.BCEWithLogitsLoss()
 # criterion = nn.BCELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-1)
 
 
 # %%
@@ -344,11 +432,11 @@ def train_one_epoch():
             labels.cpu(), predictions.cpu(), average="macro", zero_division=0
         )
 
-        # Update tqdm progress bar with batch loss and accuracy
-        tqdm.write(
-            f"Batch {batch_idx + 1}/{len(train_dataloader)} - Training Loss: {loss.item():.4f}, "
-            f"Training F1: {batch_f1 * 100:.2f}%"
-        )
+        # # Update tqdm progress bar with batch loss and accuracy
+        # tqdm.write(
+        #     f"Batch {batch_idx + 1}/{len(train_dataloader)} - Training Loss: {loss.item():.4f}, "
+        #     f"Training F1: {batch_f1 * 100:.2f}%"
+        # )
 
         # Gather data and report
         running_loss += loss.item()
@@ -370,7 +458,7 @@ def train_one_epoch():
 # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 # writer = SummaryWriter("runs/fashion_trainer_{}".format(timestamp))
 epoch_number = 0
-EPOCHS = 100
+EPOCHS = 10
 layer_ratios_over_epochs = {
     name: [] for name, param in model.named_parameters() if param.requires_grad
 }
@@ -417,13 +505,14 @@ for epoch in range(EPOCHS):
             running_vloss += vloss
 
     avg_vloss = running_vloss / len(valid_dataloader)
-    print(f"LOSS train {avg_loss:.4f} LOSS valid {avg_vloss:.4f}")
-    print(f"F1 train {running_f1:.4f} F1 valid {val_f1:.4f}")
+    print(f"Loss train {avg_loss:.4f} --- Loss valid {avg_vloss:.4f}")
+    print(f"F1 train {running_f1:.4f} --- F1 valid {val_f1:.4f}")
     print(f"Total time thus far: {(time.time()-start_time)/60:.2f} mins.....")
     print("-----------------------------------------------------------------")
 
     val_loss_per_epoch.append(avg_vloss.cpu())
     val_f1_per_epoch.append(val_f1)
+    torch.cuda.empty_cache()
     epoch_number += 1
 
 print(f"Total time to train: {(time.time()-start_time)/60:.2f} mins.....")
@@ -465,8 +554,8 @@ plt.show()
 
 # %%
 # Diagnostics
-plot_avg_update_to_weight_ratio_kde(model, optimizer)
-# plot_param_kde(model)  # Plot parameter distributions at the start or periodically
+# plot_avg_update_to_weight_ratio_kde(model, optimizer)
+plot_param_kde(model)  # Plot parameter distributions at the start or periodically
 
 # %%
 # EVALS
@@ -533,12 +622,6 @@ roc_curves(class_names, all_outputs, all_targets)
 
 # %%
 confusion_matrices(class_names, all_outputs, all_targets)
-
-# %%
-
-# %%
-
-# %%
 
 # %%
 
