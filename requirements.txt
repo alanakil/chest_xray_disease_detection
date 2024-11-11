@@ -1,0 +1,10 @@
+numpy
+pandas
+matplotlib
+seaborn
+kagglehub
+torch
+torchvision
+scikit-learn
+ipykernel
+mlflow

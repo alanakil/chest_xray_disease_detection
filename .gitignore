@@ -17,13 +17,19 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+CheXpert-v1.0-small/
 develop-eggs/
 dist/
 downloads/
+.DS_Store
 eggs/
 .eggs/
 lib/
 lib64/
+mlruns/
+mlruns/**
+src/mlruns/
+src/mlruns/**/**
 parts/
 sdist/
 var/
